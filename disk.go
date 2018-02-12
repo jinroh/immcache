@@ -100,7 +100,7 @@ func (c *DiskCache) init() bool {
 	c.sizeMax = c.opts.DiskSizeMax
 
 	if c.sizeMax > 0 {
-		c.evict = make(chan int64, 5)
+		c.evict = make(chan int64, 1)
 		go c.evictRoutine()
 	}
 
@@ -201,7 +201,10 @@ func (c *DiskCache) addFileLocked(tmp *os.File, key string, size int64, sum []by
 	}
 	c.indexmu.Unlock()
 	if c.sizeMax > 0 && totalSize > c.sizeMax {
-		c.evict <- totalSize
+		select {
+		case c.evict <- totalSize:
+		default:
+		}
 	}
 	return err
 }
