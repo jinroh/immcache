@@ -4,8 +4,8 @@ Immcache
 Immcache is a simple immutable key/value cache written in Go with a minimalist
 API where data blobs are stored in the local filesystem. It is well designed for these use cases:
 
-    - serving small http assets that are versionned/revisioned and immutable
-    - having a little local cache to avoid pressuring another system
+- serving small http assets that are versionned/revisioned and immutable
+- having a little local cache to avoid pressuring another system
 
 
 Installing
