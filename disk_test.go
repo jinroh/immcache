@@ -12,7 +12,7 @@ import (
 )
 
 func TestDiskCache(t *testing.T) {
-	cache := NewDiskCache(NewLRU(), DiskCacheOptions{
+	cache := NewDiskCache(LRUIndex(), DiskCacheOptions{
 		BasePath:       os.TempDir(),
 		BasePathPrefix: "cozy-disk-test",
 	})
