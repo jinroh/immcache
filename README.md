@@ -7,6 +7,14 @@ API where data blobs are stored in the local filesystem. It is well designed for
 - serving small http assets that are versionned/revisioned and immutable
 - having a little local cache to avoid pressuring another system
 
+For each cached entry, the HMAC of its content is calculated before they are
+committed into the cache, and the filename in the cache directory is chosen to
+be the hexadecimal representation of its HMAC.
+
+HMACs are calculated using either a 16 bytes random key generated at
+initialization or by a key given in the initialization options of the cache.
+This allow to prevent any corruption of the cache content or layout and has
+some good properties to help concurrency.
 
 Installing
 ----------

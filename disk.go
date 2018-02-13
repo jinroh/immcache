@@ -88,6 +88,7 @@ func (c *DiskCache) init() bool {
 		return state == inited
 	}
 
+	var err error
 	if len(c.opts.Secret) > 0 {
 		c.secret = c.opts.Secret
 	} else {
@@ -98,7 +99,6 @@ func (c *DiskCache) init() bool {
 		}
 	}
 
-	var err error
 	if c.opts.BasePath == "" || c.opts.BasePathPrefix != "" {
 		c.basePath, err = ioutil.TempDir(c.opts.BasePath, c.opts.BasePathPrefix)
 	} else {
@@ -189,6 +189,9 @@ func (c *DiskCache) getOrLoad(key string, loader Loader) (src io.ReadCloser, err
 	}
 
 	// create the temporary file in which we stream the content of the source.
+	// the temporary file is created in the basePath to make sure we can safely
+	// rename the file to its destination without having a copy (ie. from the
+	// same device/partition).
 	tmp, errt := ioutil.TempFile(c.basePath, "")
 	if errt != nil {
 		return
@@ -204,9 +207,9 @@ func (c *DiskCache) getOrLoad(key string, loader Loader) (src io.ReadCloser, err
 	}, nil
 }
 
-func (c *DiskCache) addFileLocked(tmp *os.File, key string, size int64, sum []byte) error {
+func (c *DiskCache) addFileLocked(tmppath, key string, size int64, sum []byte) error {
 	var totalSize int64
-	err := c.renameOrCopy(tmp, sum)
+	err := c.rename(tmppath, sum)
 	c.indexmu.Lock()
 	if err == nil {
 		c.index.Set(key, diskEntry{sum, size})
@@ -223,11 +226,11 @@ func (c *DiskCache) addFileLocked(tmp *os.File, key string, size int64, sum []by
 	return err
 }
 
-func (c *DiskCache) renameOrCopy(tmp *os.File, sum []byte) (err error) {
+func (c *DiskCache) rename(tmppath string, sum []byte) (err error) {
 	newpath := c.getFilename(sum)
 	err = os.MkdirAll(filepath.Dir(newpath), 0700)
 	if err == nil || os.IsExist(err) {
-		err = os.Rename(tmp.Name(), newpath)
+		return os.Rename(tmppath, newpath)
 	}
 	return
 }
@@ -364,7 +367,7 @@ func (t *diskTee) Close() (err error) {
 		errw = errSizeNotMatch
 	}
 	if errw == nil {
-		errw = t.c.addFileLocked(t.tmp, t.key, t.size, t.h.Sum(nil))
+		errw = t.c.addFileLocked(t.tmp.Name(), t.key, t.size, t.h.Sum(nil))
 	}
 	if errw != nil {
 		os.Remove(t.tmp.Name())

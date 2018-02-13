@@ -44,6 +44,9 @@ func TestDiskCache(t *testing.T) {
 			r := io.MultiReader(bytes.NewReader([]byte("toto")), failReader{})
 			return 16, ioutil.NopCloser(r), nil
 		}))
+		if !assert.NoError(t, err) {
+			return
+		}
 
 		_, isTee := rc.(*diskTee)
 		assert.True(t, isTee)
