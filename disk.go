@@ -39,9 +39,9 @@ type DiskCache struct {
 	state    uint32 // 0 = non-initialized, 1 = initialized, 2 = closed
 	statetmu sync.Mutex
 
-	index   Index // owned by indexmu
-	size    int64 // owned by indexmu
-	indexmu sync.Mutex
+	index   Index      // owned by indexmu
+	size    int64      // owned by indexmu
+	indexmu sync.Mutex // not a RWMutex: indexes may have write ops on read
 
 	// "constants" after initialization
 	basePath string
