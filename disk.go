@@ -113,6 +113,7 @@ func (c *DiskCache) init() bool {
 
 	if c.sizeMax > 0 {
 		c.evict = make(chan int64, 1)
+		c.evictLast = time.Now()
 		go c.evictRoutine()
 	}
 
