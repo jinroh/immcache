@@ -36,12 +36,10 @@ const (
 // DiskCache implement an immutable cache using the local filesystem as its
 // persistence layer.
 type DiskCache struct {
-	state    uint32 // 0 = non-initialized, 1 = initialized, 2 = closed
-	statetmu sync.Mutex
-
-	index   Index      // owned by indexmu
-	size    int64      // owned by indexmu
-	indexmu sync.Mutex // not a RWMutex: indexes may have write ops on read
+	state uint32     // 0 = non-initialized, 1 = initialized, 2 = closed
+	index Index      // owned by mu
+	size  int64      // owned by mu
+	mu    sync.Mutex // not a RWMutex: indexes may have write ops on read
 
 	// "constants" after initialization
 	basePath string
@@ -81,8 +79,8 @@ func NewDiskCache(index Index, opts DiskCacheOptions) (c *DiskCache) {
 }
 
 func (c *DiskCache) init() bool {
-	c.statetmu.Lock()
-	defer c.statetmu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	state := atomic.LoadUint32(&c.state)
 	if state > 0 {
 		return state == inited
@@ -122,14 +120,13 @@ func (c *DiskCache) init() bool {
 }
 
 func (c *DiskCache) PurgeAndClose() error {
-	c.statetmu.Lock()
-	defer c.statetmu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	state := atomic.LoadUint32(&c.state)
 	if state == closed {
 		return nil
 	}
 	if state == inited {
-		c.indexmu.Lock()
 		c.index = nil
 		if c.basePath != "" {
 			os.RemoveAll(c.basePath)
@@ -139,7 +136,6 @@ func (c *DiskCache) PurgeAndClose() error {
 			close(c.evict)
 			c.evict = nil
 		}
-		c.indexmu.Unlock()
 	}
 	atomic.StoreUint32(&c.state, closed)
 	return nil
@@ -162,9 +158,9 @@ func (c *DiskCache) GetOrLoad(key string, loader Loader) (rc io.ReadCloser, err 
 
 func (c *DiskCache) getOrLoad(key string, loader Loader) (src io.ReadCloser, err error) {
 	// fast case, if the file already is in our index
-	c.indexmu.Lock()
+	c.mu.Lock()
 	value, ok := c.index.Get(key)
-	c.indexmu.Unlock()
+	c.mu.Unlock()
 	if ok {
 		sum := value.(diskEntry).sum
 		src, err = c.openFile(sum, c.secret)
@@ -213,13 +209,13 @@ func (c *DiskCache) getOrLoad(key string, loader Loader) (src io.ReadCloser, err
 func (c *DiskCache) addFileLocked(tmppath, key string, size int64, sum []byte) error {
 	var totalSize int64
 	err := c.rename(tmppath, sum)
-	c.indexmu.Lock()
+	c.mu.Lock()
 	if err == nil {
 		c.index.Set(key, diskEntry{sum, size})
 		c.size += size
 		totalSize = c.size
 	}
-	c.indexmu.Unlock()
+	c.mu.Unlock()
 	if c.sizeMax > 0 && totalSize > c.sizeMax {
 		select {
 		case c.evict <- totalSize:
@@ -277,8 +273,8 @@ func (c *DiskCache) evictRoutine() {
 }
 
 func (c *DiskCache) eviction() {
-	c.indexmu.Lock()
-	defer c.indexmu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for c.size > c.sizeMax {
 		_, value, ok := c.index.RemoveUnused()
 		if !ok {
