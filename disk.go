@@ -3,6 +3,7 @@ package immcache
 import (
 	"bufio"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -13,8 +14,6 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-
-	"github.com/cozy/cozy-stack/pkg/crypto"
 )
 
 const (
@@ -94,7 +93,7 @@ func (c *DiskCache) init() bool {
 	if len(c.opts.Secret) > 0 {
 		c.secret = c.opts.Secret
 	} else {
-		c.secret = crypto.GenerateRandomBytes(16)
+		c.secret = genRandomBytes(16)
 	}
 
 	c.sizeMax = c.opts.DiskSizeMax
@@ -356,4 +355,12 @@ func (t *diskTee) Close() (err error) {
 		os.Remove(t.tmp.Name())
 	}
 	return errc
+}
+
+func genRandomBytes(n int) []byte {
+	b := make([]byte, n)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		panic("immcache: could not generate random bytes")
+	}
+	return b
 }
