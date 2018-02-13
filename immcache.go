@@ -17,11 +17,23 @@ type (
 
 	// Loader is a function called to load the fetched resource, in the case of a
 	// cache-miss. It should return the size of the content.
-	Loader func() (int64, io.ReadCloser, error)
+	Loader interface {
+		Load(key string) (int64, io.ReadCloser, error)
+	}
 
+	// Index defines an index to store the key/value mapping.
+	// RemoveUnused can be used for the eviction process to preferably remove
+	// the least important entry.
 	Index interface {
 		Get(key string) (val interface{}, ok bool)
 		Set(key string, val interface{})
 		RemoveUnused() (key string, value interface{}, ok bool)
 	}
 )
+
+// FuncLoader can be used to turn a loader function into a Loader.
+type FuncLoader func(key string) (int64, io.ReadCloser, error)
+
+func (f FuncLoader) Load(key string) (int64, io.ReadCloser, error) {
+	return f(key)
+}

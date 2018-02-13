@@ -137,7 +137,7 @@ func (c *DiskCache) BasePath() string {
 
 func (c *DiskCache) GetOrLoad(key string, loader Loader) (rc io.ReadCloser, err error) {
 	if !c.init() {
-		_, rc, err = loader()
+		_, rc, err = loader.Load(key)
 		return
 	}
 	return c.getOrLoad(key, loader)
@@ -158,13 +158,13 @@ func (c *DiskCache) getOrLoad(key string, loader Loader) (src io.ReadCloser, err
 		// is an issue fetching files from the local disk — we bail early and
 		// return the loader value.
 		if !os.IsNotExist(err) {
-			_, src, err = loader()
+			_, src, err = loader.Load(key)
 			return
 		}
 	}
 
 	var size int64
-	size, src, err = loader()
+	size, src, err = loader.Load(key)
 	if err != nil || size < 0 {
 		return
 	}
