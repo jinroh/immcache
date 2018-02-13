@@ -88,6 +88,16 @@ func (c *DiskCache) init() bool {
 		return state == inited
 	}
 
+	if len(c.opts.Secret) > 0 {
+		c.secret = c.opts.Secret
+	} else {
+		c.secret, err = genRandomBytes(16)
+		if err != nil {
+			atomic.StoreUint32(&c.state, closed)
+			return false
+		}
+	}
+
 	var err error
 	if c.opts.BasePath == "" || c.opts.BasePathPrefix != "" {
 		c.basePath, err = ioutil.TempDir(c.opts.BasePath, c.opts.BasePathPrefix)
@@ -97,16 +107,6 @@ func (c *DiskCache) init() bool {
 	if err != nil {
 		atomic.StoreUint32(&c.state, closed)
 		return false
-	}
-
-	if len(c.opts.Secret) > 0 {
-		c.secret = c.opts.Secret
-	} else {
-		c.secret, err = genRandomBytes(16)
-		if err != nil {
-			atomic.StoreUint32(&c.state, closed)
-			return false
-		}
 	}
 
 	c.sizeMax = c.opts.DiskSizeMax
