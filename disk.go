@@ -163,7 +163,7 @@ func (c *DiskCache) getOrLoad(key string, loader Loader) (src io.ReadCloser, err
 	c.mu.Unlock()
 	if ok {
 		sum := value.(diskEntry).sum
-		src, err = c.openFile(sum, c.secret)
+		src, err = c.openFile(sum)
 		if err == nil {
 			return
 		}
@@ -239,13 +239,13 @@ func (c *DiskCache) getFilename(sum []byte) string {
 	return filepath.Join(c.basePath, key[:2], key[2:32])
 }
 
-func (c *DiskCache) openFile(sum, secret []byte) (*diskFile, error) {
+func (c *DiskCache) openFile(sum []byte) (*diskFile, error) {
 	filename := c.getFilename(sum)
 	f, err := os.Open(filename)
 	if err != nil {
 		return nil, err
 	}
-	h := hmac.New(sha256.New, secret)
+	h := hmac.New(sha256.New, c.secret)
 	return &diskFile{
 		f:   f,
 		h:   h,
