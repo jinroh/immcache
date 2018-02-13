@@ -209,13 +209,13 @@ func (c *DiskCache) getOrLoad(key string, loader Loader) (src io.ReadCloser, err
 func (c *DiskCache) addFileLocked(tmppath, key string, size int64, sum []byte) error {
 	var totalSize int64
 	err := c.rename(tmppath, sum)
-	c.mu.Lock()
 	if err == nil {
+		c.mu.Lock()
 		c.index.Set(key, diskEntry{sum, size})
 		c.size += size
 		totalSize = c.size
+		c.mu.Unlock()
 	}
-	c.mu.Unlock()
 	if c.sizeMax > 0 && totalSize > c.sizeMax {
 		select {
 		case c.evict <- totalSize:
