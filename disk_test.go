@@ -19,9 +19,9 @@ func TestDiskCache(t *testing.T) {
 	defer cache.PurgeAndClose()
 
 	{
-		rc, err := cache.GetOrLoad("key", func() (int64, io.ReadCloser, error) {
+		rc, err := cache.GetOrLoad("key", FuncLoader(func(_ string) (int64, io.ReadCloser, error) {
 			return 4, ioutil.NopCloser(bytes.NewReader([]byte("toto"))), nil
-		})
+		}))
 		if !assert.NoError(t, err) {
 			return
 		}
@@ -40,10 +40,10 @@ func TestDiskCache(t *testing.T) {
 	}
 
 	{
-		rc, err := cache.GetOrLoad("keyfailure", func() (int64, io.ReadCloser, error) {
+		rc, err := cache.GetOrLoad("keyfailure", FuncLoader(func(_ string) (int64, io.ReadCloser, error) {
 			r := io.MultiReader(bytes.NewReader([]byte("toto")), failReader{})
 			return 16, ioutil.NopCloser(r), nil
-		})
+		}))
 
 		_, isTee := rc.(*diskTee)
 		assert.True(t, isTee)
@@ -62,17 +62,17 @@ func TestDiskCache(t *testing.T) {
 			return
 		}
 
-		rc, err = cache.GetOrLoad("keyfailure", func() (int64, io.ReadCloser, error) {
+		rc, err = cache.GetOrLoad("keyfailure", FuncLoader(func(_ string) (int64, io.ReadCloser, error) {
 			return 16, nil, errTestFail
-		})
+		}))
 		if assert.Error(t, err) {
 			assert.Equal(t, errTestFail, err)
 		}
 		assert.Nil(t, rc)
 
-		rc, err = cache.GetOrLoad("keyfailure", func() (int64, io.ReadCloser, error) {
+		rc, err = cache.GetOrLoad("keyfailure", FuncLoader(func(_ string) (int64, io.ReadCloser, error) {
 			return 16 /*= bad length */, ioutil.NopCloser(bytes.NewReader([]byte("toto"))), nil
-		})
+		}))
 		if !assert.NoError(t, err) {
 			return
 		}
@@ -81,9 +81,9 @@ func TestDiskCache(t *testing.T) {
 		assert.True(t, isTee)
 		assert.NoError(t, rc.Close())
 
-		rc, err = cache.GetOrLoad("keyfailure", func() (int64, io.ReadCloser, error) {
+		rc, err = cache.GetOrLoad("keyfailure", FuncLoader(func(_ string) (int64, io.ReadCloser, error) {
 			return 4, ioutil.NopCloser(bytes.NewReader([]byte("toto"))), nil
-		})
+		}))
 		if !assert.NoError(t, err) {
 			return
 		}
@@ -103,9 +103,9 @@ func TestDiskCache(t *testing.T) {
 	// should have keys "key" and "keyfailure"
 
 	{
-		rc, err := cache.GetOrLoad("key", func() (int64, io.ReadCloser, error) {
+		rc, err := cache.GetOrLoad("key", FuncLoader(func(_ string) (int64, io.ReadCloser, error) {
 			return 4, ioutil.NopCloser(bytes.NewReader([]byte("tata"))), nil
-		})
+		}))
 		if !assert.NoError(t, err) {
 			return
 		}
@@ -124,9 +124,9 @@ func TestDiskCache(t *testing.T) {
 	}
 
 	{
-		rc, err := cache.GetOrLoad("keyfailure", func() (int64, io.ReadCloser, error) {
+		rc, err := cache.GetOrLoad("keyfailure", FuncLoader(func(_ string) (int64, io.ReadCloser, error) {
 			return 4, ioutil.NopCloser(bytes.NewReader([]byte("tata"))), nil
-		})
+		}))
 		if !assert.NoError(t, err) {
 			return
 		}
@@ -146,9 +146,9 @@ func TestDiskCache(t *testing.T) {
 
 	{
 		errload := errors.New("load error")
-		rc, err := cache.GetOrLoad("key2", func() (int64, io.ReadCloser, error) {
+		rc, err := cache.GetOrLoad("key2", FuncLoader(func(_ string) (int64, io.ReadCloser, error) {
 			return 0, nil, errload
-		})
+		}))
 		assert.Error(t, err)
 		assert.Equal(t, errload, err)
 		assert.Nil(t, rc)

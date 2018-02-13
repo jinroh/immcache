@@ -7,12 +7,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"hash"
 	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,22 +28,28 @@ var (
 	errSizeNotMatch   = errors.New("imutcache: size does not match")
 )
 
+const (
+	inited = 1
+	closed = 2
+)
+
 // DiskCache implement an immutable cache using the local filesystem as its
 // persistence layer.
 type DiskCache struct {
+	state    uint32 // 0 = non-initialized, 1 = initialized, 2 = closed
+	statetmu sync.Mutex
+
+	index   Index // owned by indexmu
+	size    int64 // owned by indexmu
+	indexmu sync.RWMutex
+
+	// "constants" after initialization
 	basePath string
-	index    Index
 	secret   []byte
-	size     int64
 	sizeMax  int64
 
-	indexmu sync.RWMutex
-	initmu  sync.Mutex
-	inited  bool
-	closed  bool
-
 	evict     chan int64
-	evictLast time.Time
+	evictLast time.Time // owned by the eviction routine under the evict channel
 
 	opts *DiskCacheOptions
 }
@@ -73,10 +81,11 @@ func NewDiskCache(index Index, opts DiskCacheOptions) (c *DiskCache) {
 }
 
 func (c *DiskCache) init() bool {
-	c.initmu.Lock()
-	defer c.initmu.Unlock()
-	if c.inited || c.closed {
-		return !c.closed
+	c.statetmu.Lock()
+	defer c.statetmu.Unlock()
+	state := atomic.LoadUint32(&c.state)
+	if state > 0 {
+		return state == inited
 	}
 
 	var err error
@@ -86,14 +95,18 @@ func (c *DiskCache) init() bool {
 		c.basePath, err = c.opts.BasePath, os.MkdirAll(c.opts.BasePath, 0700)
 	}
 	if err != nil {
-		c.closed = true
+		atomic.StoreUint32(&c.state, closed)
 		return false
 	}
 
 	if len(c.opts.Secret) > 0 {
 		c.secret = c.opts.Secret
 	} else {
-		c.secret = genRandomBytes(16)
+		c.secret, err = genRandomBytes(16)
+		if err != nil {
+			atomic.StoreUint32(&c.state, closed)
+			return false
+		}
 	}
 
 	c.sizeMax = c.opts.DiskSizeMax
@@ -103,17 +116,18 @@ func (c *DiskCache) init() bool {
 		go c.evictRoutine()
 	}
 
-	c.inited = true
+	atomic.StoreUint32(&c.state, inited)
 	return true
 }
 
 func (c *DiskCache) PurgeAndClose() error {
-	c.initmu.Lock()
-	defer c.initmu.Unlock()
-	if c.closed {
+	c.statetmu.Lock()
+	defer c.statetmu.Unlock()
+	state := atomic.LoadUint32(&c.state)
+	if state == closed {
 		return nil
 	}
-	if c.inited {
+	if state == inited {
 		c.index = nil
 		if c.basePath != "" {
 			os.RemoveAll(c.basePath)
@@ -124,22 +138,23 @@ func (c *DiskCache) PurgeAndClose() error {
 			c.evict = nil
 		}
 	}
-	c.closed = true
+	atomic.StoreUint32(&c.state, closed)
 	return nil
 }
 
 func (c *DiskCache) BasePath() string {
-	c.initmu.Lock()
-	defer c.initmu.Unlock()
-	return c.basePath
+	if atomic.LoadUint32(&c.state) == inited {
+		return c.basePath
+	}
+	return ""
 }
 
 func (c *DiskCache) GetOrLoad(key string, loader Loader) (rc io.ReadCloser, err error) {
-	if !c.init() {
-		_, rc, err = loader.Load(key)
-		return
+	if atomic.LoadUint32(&c.state) == inited || c.init() {
+		return c.getOrLoad(key, loader)
 	}
-	return c.getOrLoad(key, loader)
+	_, rc, err = loader.Load(key)
+	return
 }
 
 func (c *DiskCache) getOrLoad(key string, loader Loader) (src io.ReadCloser, err error) {
@@ -357,10 +372,10 @@ func (t *diskTee) Close() (err error) {
 	return errc
 }
 
-func genRandomBytes(n int) []byte {
+func genRandomBytes(n int) ([]byte, error) {
 	b := make([]byte, n)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		panic("immcache: could not generate random bytes")
+		return nil, fmt.Errorf("immcache: could not generate random bytes: %s", err)
 	}
-	return b
+	return b, nil
 }
