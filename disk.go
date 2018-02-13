@@ -208,14 +208,16 @@ func (c *DiskCache) getOrLoad(key string, loader Loader) (src io.ReadCloser, err
 
 func (c *DiskCache) addFileLocked(tmppath, key string, size int64, sum []byte) error {
 	var totalSize int64
+	c.mu.Lock()
 	err := c.rename(tmppath, sum)
-	if err == nil {
-		c.mu.Lock()
+	if err == nil || os.IsExist(err) {
 		c.index.Set(key, diskEntry{sum, size})
+	}
+	if err == nil {
 		c.size += size
 		totalSize = c.size
-		c.mu.Unlock()
 	}
+	c.mu.Unlock()
 	if c.sizeMax > 0 && totalSize > c.sizeMax {
 		select {
 		case c.evict <- totalSize:
@@ -228,10 +230,20 @@ func (c *DiskCache) addFileLocked(tmppath, key string, size int64, sum []byte) e
 func (c *DiskCache) rename(tmppath string, sum []byte) (err error) {
 	newpath := c.getFilename(sum)
 	err = os.MkdirAll(filepath.Dir(newpath), 0700)
-	if err == nil || os.IsExist(err) {
-		return os.Rename(tmppath, newpath)
+	if err != nil && !os.IsExist(err) {
+		return
 	}
-	return
+	// make sure we cannot concurrently create the same file and messing the size
+	// of the cache. since file paths are calculated via a checksum, two files
+	// with different keys but with the same content will collide.
+	f, err := os.OpenFile(newpath, os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return
+	}
+	if err = f.Close(); err != nil {
+		return
+	}
+	return os.Rename(tmppath, newpath)
 }
 
 func (c *DiskCache) getFilename(sum []byte) string {
@@ -377,7 +389,8 @@ func (t *diskTee) Close() (err error) {
 func genRandomBytes(n int) ([]byte, error) {
 	b := make([]byte, n)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		return nil, fmt.Errorf("immcache: could not generate random bytes: %s", err)
+		return nil, fmt.Errorf("immcache: could not generate random bytes: %s",
+			err)
 	}
 	return b, nil
 }

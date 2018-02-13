@@ -193,10 +193,9 @@ func TestRandom(t *testing.T) {
 
 	donech := make(chan error)
 	for i := 0; i < concurrency; i++ {
-		go func(seed uint64) {
-			indexRNG := rand.New(rand.NewSource(int64(seed)))
+		go func(r *rand.Rand) {
 			for j := 0; j < workerOps; j++ {
-				k := keys[indexRNG.Uint64()%resourcesLen]
+				k := keys[r.Uint64()%resourcesLen]
 				rc, err := cache.GetOrLoad(k, loader)
 				if err != nil {
 					donech <- err
@@ -217,7 +216,7 @@ func TestRandom(t *testing.T) {
 				}
 			}
 			donech <- nil
-		}(rng.Uint64())
+		}(rand.New(rand.NewSource(int64(rng.Uint64()))))
 	}
 
 	for i := 0; i < concurrency; i++ {
