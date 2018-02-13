@@ -41,7 +41,7 @@ type DiskCache struct {
 
 	index   Index // owned by indexmu
 	size    int64 // owned by indexmu
-	indexmu sync.RWMutex
+	indexmu sync.Mutex
 
 	// "constants" after initialization
 	basePath string
@@ -129,6 +129,7 @@ func (c *DiskCache) PurgeAndClose() error {
 		return nil
 	}
 	if state == inited {
+		c.indexmu.Lock()
 		c.index = nil
 		if c.basePath != "" {
 			os.RemoveAll(c.basePath)
@@ -138,6 +139,7 @@ func (c *DiskCache) PurgeAndClose() error {
 			close(c.evict)
 			c.evict = nil
 		}
+		c.indexmu.Unlock()
 	}
 	atomic.StoreUint32(&c.state, closed)
 	return nil
@@ -160,9 +162,9 @@ func (c *DiskCache) GetOrLoad(key string, loader Loader) (rc io.ReadCloser, err 
 
 func (c *DiskCache) getOrLoad(key string, loader Loader) (src io.ReadCloser, err error) {
 	// fast case, if the file already is in our index
-	c.indexmu.RLock()
+	c.indexmu.Lock()
 	value, ok := c.index.Get(key)
-	c.indexmu.RUnlock()
+	c.indexmu.Unlock()
 	if ok {
 		sum := value.(diskEntry).sum
 		src, err = c.openFile(sum, c.secret)

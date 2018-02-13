@@ -2,11 +2,15 @@ package immcache
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"os"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -156,6 +160,87 @@ func TestDiskCache(t *testing.T) {
 		assert.Equal(t, errload, err)
 		assert.Nil(t, rc)
 	}
+}
+
+func TestRandom(t *testing.T) {
+	const workerOps = 1024
+	const concurrency = 128
+	const resourcesLen = 128
+
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	resources := make(map[string][]byte, resourcesLen)
+	keys := make([]string, resourcesLen)
+
+	for i := 0; i < resourcesLen; i++ {
+		key, val := genResource(rng)
+		resources[key] = val
+		keys[i] = key
+	}
+
+	cache := NewDiskCache(LRUIndex(), DiskCacheOptions{
+		BasePath:       os.TempDir(),
+		BasePathPrefix: "cozy-disk-test",
+	})
+
+	loader := FuncLoader(func(key string) (int64, io.ReadCloser, error) {
+		b, ok := resources[key]
+		if ok {
+			return int64(len(b)), ioutil.NopCloser(bytes.NewReader(b)), nil
+		}
+		return 0, nil, errTestFail
+	})
+
+	donech := make(chan error)
+	for i := 0; i < concurrency; i++ {
+		go func(seed uint64) {
+			indexRNG := rand.New(rand.NewSource(int64(seed)))
+			for j := 0; j < workerOps; j++ {
+				k := keys[indexRNG.Uint64()%resourcesLen]
+				rc, err := cache.GetOrLoad(k, loader)
+				if err != nil {
+					donech <- err
+					return
+				}
+				b, err := ioutil.ReadAll(rc)
+				if err != nil {
+					donech <- err
+					return
+				}
+				if !bytes.Equal(b, resources[k]) {
+					donech <- errTestFail
+					return
+				}
+				if err = rc.Close(); err != nil {
+					donech <- rc.Close()
+					return
+				}
+			}
+			donech <- nil
+		}(rng.Uint64())
+	}
+
+	for i := 0; i < concurrency; i++ {
+		assert.NoError(t, <-donech)
+	}
+
+	assert.NoError(t, cache.PurgeAndClose())
+}
+
+func genResource(rng *rand.Rand) (key string, val []byte) {
+	const maxResourceLen = 10 * 1024
+
+	len := int((((rng.Uint32() + 8) % maxResourceLen) / 8) * 8)
+	k := int64(rng.Uint64())
+	if k < 0 {
+		k = -k
+	}
+	key = strconv.FormatInt(k, 10)
+	val = make([]byte, len)
+	for i := 0; i < len/8; i++ {
+		binary.BigEndian.PutUint64(val[i*8:], rng.Uint64())
+	}
+	return
 }
 
 var errTestFail = errors.New("text")
