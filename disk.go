@@ -36,10 +36,11 @@ const (
 // DiskCache implement an immutable cache using the local filesystem as its
 // persistence layer.
 type DiskCache struct {
-	state uint32     // 0 = non-initialized, 1 = initialized, 2 = closed
-	index Index      // owned by mu
-	size  int64      // owned by mu
-	mu    sync.Mutex // not a RWMutex: indexes may have write ops on read
+	state uint32               // 0 = non-initialized, 1 = initialized, 2 = closed
+	index Index                // owned by mu
+	size  int64                // owned by mu
+	calls map[string]*loadCall // owned by mu
+	mu    sync.Mutex           // not a RWMutex: indexes may have write ops on read
 
 	// "constants" after initialization
 	basePath string
@@ -68,12 +69,18 @@ type diskEntry struct {
 	size int64
 }
 
+type loadCall struct {
+	sync.WaitGroup
+	er error
+}
+
 // NewDiskCache returns a Immutable allowing to store files in the local
 // filesystem. The cached files are stored in the given base directory, or the
 // default OS temporary folder if empty, and stored using the given prefix.
 func NewDiskCache(index Index, opts DiskCacheOptions) (c *DiskCache) {
 	return &DiskCache{
 		index: index,
+		calls: make(map[string]*loadCall),
 		opts:  &opts,
 	}
 }
@@ -157,13 +164,58 @@ func (c *DiskCache) GetOrLoad(key string, loader Loader) (rc io.ReadCloser, err 
 }
 
 func (c *DiskCache) getOrLoad(key string, loader Loader) (src io.ReadCloser, err error) {
-	// fast case, if the file already is in our index
-	c.mu.Lock()
-	value, ok := c.index.Get(key)
-	c.mu.Unlock()
-	if ok {
-		sum := value.(diskEntry).sum
-		src, err = c.openFile(sum)
+	var entry diskEntry
+	var call *loadCall
+	var cacheHit, callHit bool
+
+	defer func() {
+		didLoad := !callHit && !cacheHit
+		if didLoad && err != nil {
+			c.mu.Lock()
+			delete(c.calls, key)
+			c.mu.Unlock()
+			call.er = err
+			call.Done()
+		}
+	}()
+
+	{
+		c.mu.Lock()
+		var value interface{}
+		if value, cacheHit = c.index.Get(key); cacheHit {
+			entry = value.(diskEntry)
+		} else if call, callHit = c.calls[key]; !callHit {
+			call = new(loadCall)
+			call.Add(1)
+			c.calls[key] = call
+		}
+		c.mu.Unlock()
+	}
+
+	// another call on the given key is already in-flight. we wait of the loader
+	// of this call to finish to avoid multiple call on the same key while
+	// populating the cache.
+	if callHit {
+		call.Wait()
+		if call.er != nil {
+			_, src, err = loader.Load(key)
+			return
+		}
+		var value interface{}
+		c.mu.Lock()
+		value, cacheHit = c.index.Get(key)
+		c.mu.Unlock()
+		if cacheHit {
+			entry = value.(diskEntry)
+		}
+		call = nil
+	}
+
+	// a cache hit was achieved, either directly from the cache, or after waiting
+	// for an in-flight loader to finish. we can try to open the file with the
+	// specified checksum.
+	if cacheHit {
+		src, err = c.openFile(entry.sum)
 		if err == nil {
 			return
 		}
@@ -175,6 +227,8 @@ func (c *DiskCache) getOrLoad(key string, loader Loader) (src io.ReadCloser, err
 			return
 		}
 	}
+
+	// at this point, we are launching a new load request.
 
 	var size int64
 	size, src, err = loader.Load(key)
@@ -200,30 +254,37 @@ func (c *DiskCache) getOrLoad(key string, loader Loader) (src io.ReadCloser, err
 		src:  src,
 		tmp:  tmp,
 		key:  key,
+		call: call,
 		size: size,
 		c:    c,
 		h:    hmac.New(sha256.New, c.secret),
 	}, nil
 }
 
-func (c *DiskCache) addFileLocked(tmppath, key string, size int64, sum []byte) error {
+func (c *DiskCache) addFileLocked(err error, tmppath, key string, size int64, sum []byte) error {
 	var totalSize int64
+
 	c.mu.Lock()
-	err := c.rename(tmppath, sum)
-	if err == nil || os.IsExist(err) {
-		c.index.Set(key, diskEntry{sum, size})
-	}
 	if err == nil {
-		c.size += size
-		totalSize = c.size
+		err = c.rename(tmppath, sum)
+		if err == nil || os.IsExist(err) {
+			c.index.Set(key, diskEntry{sum, size})
+		}
+		if err == nil {
+			c.size += size
+			totalSize = c.size
+		}
 	}
+	delete(c.calls, key)
 	c.mu.Unlock()
+
 	if c.sizeMax > 0 && totalSize > c.sizeMax {
 		select {
 		case c.evict <- totalSize:
 		default:
 		}
 	}
+
 	return err
 }
 
@@ -335,6 +396,7 @@ type diskTee struct {
 	tmp  *os.File
 	bfr  *bufio.Writer
 	key  string
+	call *loadCall
 	size int64
 	c    *DiskCache
 	h    hash.Hash
@@ -377,11 +439,14 @@ func (t *diskTee) Close() (err error) {
 	if errw == nil && t.n != t.size {
 		errw = errSizeNotMatch
 	}
-	if errw == nil {
-		errw = t.c.addFileLocked(t.tmp.Name(), t.key, t.size, t.h.Sum(nil))
-	}
+	errw = t.c.addFileLocked(errw, t.tmp.Name(), t.key, t.size, t.h.Sum(nil))
 	if errw != nil {
 		os.Remove(t.tmp.Name())
+	}
+	// wake the entry's waitgroup
+	if t.call != nil {
+		t.call.er = errw
+		t.call.Done()
 	}
 	return errc
 }

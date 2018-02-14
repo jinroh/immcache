@@ -2,7 +2,6 @@ package immcache
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"io"
 	"io/ioutil"
@@ -162,20 +161,20 @@ func TestDiskCache(t *testing.T) {
 	}
 }
 
-func TestRandom(t *testing.T) {
+func TestRandomWithSuccessOnly(t *testing.T) {
 	const workerOps = 1024
-	const concurrency = 128
+	const concurrency = 256
 	const resourcesLen = 128
 
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	resources := make(map[string][]byte, resourcesLen)
+	resources := make(map[string]*resource, resourcesLen)
 	keys := make([]string, resourcesLen)
 
 	for i := 0; i < resourcesLen; i++ {
-		key, val := genResource(rng)
-		resources[key] = val
-		keys[i] = key
+		resource := makeResource(int64(rng.Uint64()))
+		resources[resource.key] = resource
+		keys[i] = resource.key
 	}
 
 	cache := NewDiskCache(LRUIndex(), DiskCacheOptions{
@@ -184,9 +183,13 @@ func TestRandom(t *testing.T) {
 	})
 
 	loader := FuncLoader(func(key string) (int64, io.ReadCloser, error) {
-		b, ok := resources[key]
+		if key == "bad" {
+			return 0, nil, errWantedErr
+		}
+		r, ok := resources[key]
 		if ok {
-			return int64(len(b)), ioutil.NopCloser(bytes.NewReader(b)), nil
+			l, rc := r.Open(false)
+			return l, rc, nil
 		}
 		return 0, nil, errTestFail
 	})
@@ -201,13 +204,9 @@ func TestRandom(t *testing.T) {
 					donech <- err
 					return
 				}
-				b, err := ioutil.ReadAll(rc)
+				_, err = ioutil.ReadAll(rc)
 				if err != nil {
 					donech <- err
-					return
-				}
-				if !bytes.Equal(b, resources[k]) {
-					donech <- errTestFail
 					return
 				}
 				if err = rc.Close(); err != nil {
@@ -226,23 +225,165 @@ func TestRandom(t *testing.T) {
 	assert.NoError(t, cache.PurgeAndClose())
 }
 
-func genResource(rng *rand.Rand) (key string, val []byte) {
-	const maxResourceLen = 10 * 1024
+func TestRandomWithErrors(t *testing.T) {
+	const workerOps = 1024
+	const concurrency = 256
+	const resourcesLen = 128
 
-	len := int((((rng.Uint32() + 8) % maxResourceLen) / 8) * 8)
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	resources := make(map[string]*resource, resourcesLen)
+	keys := make([]string, resourcesLen)
+
+	for i := 0; i < resourcesLen; i++ {
+		resource := makeResource(int64(rng.Uint64()))
+		resources[resource.key] = resource
+		keys[i] = resource.key
+	}
+
+	cache := NewDiskCache(LRUIndex(), DiskCacheOptions{
+		BasePath:       os.TempDir(),
+		BasePathPrefix: "cozy-disk-test",
+	})
+
+	loader := FuncLoader(func(key string) (int64, io.ReadCloser, error) {
+		r, ok := resources[key]
+		if ok {
+			l, rc := r.Open(true)
+			return l, rc, nil
+		}
+		return 0, nil, errTestFail
+	})
+
+	donech := make(chan error)
+
+	for i := 0; i < concurrency; i++ {
+		go func(r *rand.Rand) {
+			for j := 0; j < workerOps; j++ {
+				expectLoadErr := r.Intn(50) == 0
+
+				var k string
+				if expectLoadErr {
+					k = "bad"
+				} else {
+					k = keys[r.Uint64()%resourcesLen]
+				}
+
+				rc, err := cache.GetOrLoad(k, loader)
+				if expectLoadErr {
+					if err == nil {
+						donech <- errTestFail
+						return
+					}
+					continue
+				} else {
+					if err != nil {
+						donech <- err
+						return
+					}
+				}
+
+				_, err = ioutil.ReadAll(rc)
+				if err != nil {
+					rc.Close()
+					if err != errWantedErr {
+						donech <- err
+						return
+					}
+					continue
+				}
+
+				if err = rc.Close(); err != nil {
+					if err != errWantedErr {
+						donech <- err
+						return
+					}
+				}
+			}
+			donech <- nil
+		}(rand.New(rand.NewSource(int64(rng.Uint64()))))
+	}
+
+	for i := 0; i < concurrency; i++ {
+		assert.NoError(t, <-donech)
+	}
+
+	assert.NoError(t, cache.PurgeAndClose())
+}
+
+func makeResource(seed int64) *resource {
+	rng := rand.New(rand.NewSource(seed))
+
 	k := int64(rng.Uint64())
 	if k < 0 {
 		k = -k
 	}
-	key = strconv.FormatInt(k, 10)
-	val = make([]byte, len)
-	for i := 0; i < len/8; i++ {
-		binary.BigEndian.PutUint64(val[i*8:], rng.Uint64())
+
+	key := strconv.FormatInt(k, 10)
+
+	return &resource{
+		rng: rng,
+		key: key,
+	}
+}
+
+type resource struct {
+	rng *rand.Rand
+	key string
+}
+
+func (r *resource) Open(withErrors bool) (int64, *resourceHandler) {
+	const maxResourceLen = 10 * 1024
+	rng := rand.New(rand.NewSource(int64(r.rng.Uint64())))
+	l := r.rng.Intn(maxResourceLen-1) + 1
+	if l < 0 {
+		l = -l
+	}
+	if l == 0 {
+		l = 1
+	}
+	l64 := int64(l)
+	return l64, &resourceHandler{
+		rng: rng,
+		l:   l64,
+		err: withErrors,
+	}
+}
+
+type resourceHandler struct {
+	rng *rand.Rand
+	l   int64
+	n   int64
+	err bool
+}
+
+func (r *resourceHandler) Read(p []byte) (n int, err error) {
+	if r.err && r.rng.Intn(30) == 0 {
+		return 0, errWantedErr
+	}
+	n = len(p)
+	if int64(n)+r.n > r.l {
+		n = int(r.l - r.n)
+	}
+	for i := 0; i < n; i++ {
+		p[i] = byte(r.rng.Int()) // slow as hell, but whatev'
+	}
+	r.n += int64(n)
+	if r.n == r.l {
+		err = io.EOF
 	}
 	return
 }
 
-var errTestFail = errors.New("text")
+func (r *resourceHandler) Close() error {
+	if r.err && r.rng.Intn(30) == 0 {
+		return errWantedErr
+	}
+	return nil
+}
+
+var errTestFail = errors.New("failure")
+var errWantedErr = errors.New("wanted")
 
 type failReader struct{}
 

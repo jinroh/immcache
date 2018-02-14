@@ -27,6 +27,7 @@ func LRUIndex() *LRU {
 func (c *LRU) Set(key string, value interface{}) {
 	if e, ok := c.m[key]; ok {
 		c.l.MoveToFront(e)
+		e.Value.(*lruEntry).v = value
 	} else {
 		c.m[key] = c.l.PushFront(&lruEntry{key, value})
 	}
