@@ -24,8 +24,8 @@ const (
 )
 
 var (
-	errCorruptedCache = errors.New("imutcache: corrupted")
-	errSizeNotMatch   = errors.New("imutcache: size does not match")
+	errCorruptedCache = errors.New("immcache: corrupted")
+	errSizeNotMatch   = errors.New("immcache: size does not match")
 )
 
 const (
