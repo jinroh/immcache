@@ -181,34 +181,31 @@ func (c *DiskCache) getOrLoad(key string, loader Loader) (src io.ReadCloser, err
 
 	{
 		c.mu.Lock()
-		var value interface{}
-		if value, cacheHit = c.index.Get(key); cacheHit {
-			entry = value.(diskEntry)
-		} else if call, callHit = c.calls[key]; !callHit {
-			call = new(loadCall)
-			call.Add(1)
-			c.calls[key] = call
+		entry, cacheHit = c.get(key)
+		if !cacheHit {
+			if call, callHit = c.calls[key]; !callHit {
+				call = new(loadCall)
+				call.Add(1)
+				c.calls[key] = call
+			}
 		}
 		c.mu.Unlock()
 	}
 
-	// another call on the given key is already in-flight. we wait of the loader
-	// of this call to finish to avoid multiple call on the same key while
-	// populating the cache.
+	// another call on the given key is in-flight: waitint for it to finish to
+	// avoid multiple calls on the same key while populating the cache. if the
+	// in-flight has failed, we call the loader and bail without populating the
+	// cache.
 	if callHit {
 		call.Wait()
 		if call.er != nil {
 			_, src, err = loader.Load(key)
 			return
 		}
-		var value interface{}
-		c.mu.Lock()
-		value, cacheHit = c.index.Get(key)
-		c.mu.Unlock()
-		if cacheHit {
-			entry = value.(diskEntry)
-		}
 		call = nil
+		c.mu.Lock()
+		entry, cacheHit = c.get(key)
+		c.mu.Unlock()
 	}
 
 	// a cache hit was achieved, either directly from the cache, or after waiting
@@ -307,6 +304,14 @@ func (c *DiskCache) rename(tmppath string, sum []byte) (err error) {
 	return os.Rename(tmppath, newpath)
 }
 
+func (c *DiskCache) get(key string) (entry diskEntry, ok bool) {
+	var value interface{}
+	if value, ok = c.index.Get(key); ok {
+		entry = value.(diskEntry)
+	}
+	return
+}
+
 func (c *DiskCache) getFilename(sum []byte) string {
 	key := hex.EncodeToString(sum)
 	return filepath.Join(c.basePath, key[:2], key[2:32])
@@ -396,10 +401,12 @@ type diskTee struct {
 	tmp  *os.File
 	bfr  *bufio.Writer
 	key  string
-	call *loadCall
 	size int64
-	c    *DiskCache
-	h    hash.Hash
+
+	c *DiskCache
+	h hash.Hash
+
+	call *loadCall
 
 	n int64
 	e error
