@@ -198,19 +198,21 @@ func (c *DiskCache) getOrLoad(key string, loader Loader) (src io.ReadCloser, err
 	// cache.
 	if callHit {
 		call.Wait()
-		if call.er != nil {
+		if call.er == nil {
+			c.mu.Lock()
+			entry, cacheHit = c.get(key)
+			c.mu.Unlock()
+		}
+		if call.er != nil || !cacheHit {
 			_, src, err = loader.Load(key)
 			return
 		}
 		call = nil
-		c.mu.Lock()
-		entry, cacheHit = c.get(key)
-		c.mu.Unlock()
 	}
 
 	// a cache hit was achieved, either directly from the cache, or after waiting
-	// for an in-flight loader to finish. we can try to open the file with the
-	// specified checksum.
+	// for an in-flight loader to finish: open the file with the specified
+	// checksum.
 	if cacheHit {
 		src, err = c.openFile(entry.sum)
 		if err == nil {
