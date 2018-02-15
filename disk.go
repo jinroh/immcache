@@ -93,17 +93,12 @@ func (c *DiskCache) init() bool {
 		return state == inited
 	}
 
-	var err error
-	if len(c.opts.Secret) > 0 {
-		c.secret = c.opts.Secret
-	} else {
-		c.secret, err = genRandomBytes(16)
-		if err != nil {
-			atomic.StoreUint32(&c.state, closed)
-			return false
-		}
+	if l := len(c.opts.Secret); l > 0 {
+		c.secret = make([]byte, l)
+		copy(c.secret, c.opts.Secret)
 	}
 
+	var err error
 	if c.opts.BasePath == "" || c.opts.BasePathPrefix != "" {
 		c.basePath, err = ioutil.TempDir(c.opts.BasePath, c.opts.BasePathPrefix)
 	} else {
@@ -256,7 +251,7 @@ func (c *DiskCache) getOrLoad(key string, loader Loader) (src io.ReadCloser, err
 		call: call,
 		size: size,
 		c:    c,
-		h:    hmac.New(sha256.New, c.secret),
+		h:    c.hash(),
 	}, nil
 }
 
@@ -285,6 +280,13 @@ func (c *DiskCache) addFileLocked(err error, tmppath, key string, size int64, su
 	}
 
 	return err
+}
+
+func (c *DiskCache) hash() hash.Hash {
+	if c.secret != nil {
+		return hmac.New(sha256.New, c.secret)
+	}
+	return sha256.New()
 }
 
 func (c *DiskCache) rename(tmppath string, sum []byte) (err error) {
@@ -325,10 +327,9 @@ func (c *DiskCache) openFile(sum []byte) (*diskFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := hmac.New(sha256.New, c.secret)
 	return &diskFile{
 		f:   f,
-		h:   h,
+		h:   c.hash(),
 		sum: sum,
 	}, nil
 }
